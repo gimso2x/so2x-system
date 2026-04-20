@@ -9,6 +9,32 @@ so2x-system은 superpowers 실행 스타일을 빌리되, **각 프로젝트에 
 - run output / signal / state를 남긴다
 - 반복 패턴을 rule/skill/gate 후보로 승격한다
 - Claude command surface와 연결해서 `/flow-init` 같은 진입점을 바로 쓴다
+- 승인된 규칙은 다음 실행에서 gate와 prompt에 다시 주입한다
+
+## superpowers plugin 선설치
+
+so2x-system은 **superpowers plugin 자체를 번들하지 않는다.**
+대신 `https://github.com/obra/superpowers` 를 기준으로, Claude 쪽 superpowers plugin은 별도로 설치하고 so2x-system이 그 위에 얇게 붙는 구조로 간다.
+
+Claude에서는 먼저 한 번만 아래 둘 중 하나로 설치하면 된다.
+
+```text
+/plugin install superpowers@claude-plugins-official
+```
+
+또는
+
+```text
+/plugin marketplace add obra/superpowers-marketplace
+/plugin install superpowers@superpowers-marketplace
+```
+
+설치 후에는:
+- Claude command surface: `.claude/commands/*.md`
+- 로컬 orchestration/state: `.so2x-system/*`
+- 실제 workflow skill execution: 설치된 superpowers plugin
+
+이 조합으로 연결된다.
 
 ## 빠른 설치
 
@@ -16,6 +42,7 @@ so2x-system은 superpowers 실행 스타일을 빌리되, **각 프로젝트에 
 - Claude Code
 - Git
 - Python 3.11+
+- 별도 설치된 superpowers plugin
 
 ### 방법 A — AI에게 설치시키기
 
@@ -25,6 +52,7 @@ so2x-system은 superpowers 실행 스타일을 빌리되, **각 프로젝트에 
 
 ```text
 현재 프로젝트 루트를 기준으로 so2x-system을 설치해줘. 중간 확인 질문 없이 한국어로 진행하고, 새 설계 문서나 task 문서는 만들지 마.
+그리고 superpowers plugin이 아직 없으면 먼저 Claude에서 `/plugin install superpowers@claude-plugins-official` 로 설치하라고 짧게 알려줘.
 중간 단계 성공만 보고하고 응답을 끝내지 말고, 아래 1~5단계를 한 턴에서 끝까지 실제로 실행한 뒤 마지막에만 결과를 짧게 정리해.
 recap이나 "다음으로 ~ 하면 됩니다" 같은 안내만 남기지 말고, 실제 실행이 남아 있으면 계속 진행해.
 
@@ -76,7 +104,24 @@ your-project/
 
 - `.claude/commands/`는 Claude slash command surface다.
 - `.so2x-system/`는 실제 실행 로직과 상태를 담는 로컬 scaffold다.
-- 즉, **Claude에서는 `/flow-init`로 진입하고, 실제 실행은 `.so2x-system/scripts/execute.py`가 맡는다.**
+- 설치된 superpowers plugin은 Claude 안에서 실제 skill execution을 맡는다.
+- 즉, **Claude에서는 `/flow-init`로 진입하고, so2x-system은 task/run/signal/gate/state를 기록하고, 실제 workflow skill은 superpowers가 수행한다.**
+- Claude 밖 자동화가 필요하면 `SO2X_SYSTEM_SUPERPOWER_COMMAND` 환경변수로 별도 실행기를 연결할 수도 있다.
+
+## 실제 연결 방식
+
+현재 연결은 이렇게 동작한다.
+
+```text
+사용자 명령(/flow-init 등)
+-> .claude/commands/*.md
+-> .so2x-system/scripts/execute.py 호출
+-> runner가 task/run/signal/state 생성
+-> route를 읽고 approved rule / gate를 반영
+-> Claude 안에서는 설치된 superpowers skill을 따라 실제 workflow 진행
+-> self-improve가 candidate rule/skill 생성
+-> candidate 파일에서 approved: true 로 승인되면 다음 실행에 자동 재주입
+```
 
 ## 실행 예시
 
@@ -85,6 +130,7 @@ Claude에서는:
 /flow-init
 /flow-feature 결제 기능 첫 slice 구현
 /flow-qa 로그인 실패 재현부터 잡기
+/self-improve 반복된 QA 실패 승격
 ```
 
 직접 실행도 가능하다:
@@ -93,6 +139,12 @@ python3 .so2x-system/scripts/execute.py flow-init --title "Initialize project wo
 python3 .so2x-system/scripts/execute.py flow-feature --title "Add rule promotion" --goal "Turn repeated patterns into candidates"
 python3 .so2x-system/scripts/execute.py flow-qa --title "Fix failing browser proof" --goal "Capture QA misses" --pattern "browser verification missing"
 python3 .so2x-system/scripts/execute.py self-improve --title "Promote recurring failures"
+```
+
+별도 실행기를 붙이고 싶으면:
+```bash
+export SO2X_SYSTEM_SUPERPOWER_COMMAND="python3 ./mock_superpower_runner.py"
+python3 .so2x-system/scripts/execute.py flow-feature --title "Example" --goal "Dispatch route steps"
 ```
 
 ## 테스트

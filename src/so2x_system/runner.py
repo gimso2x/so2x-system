@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
+import subprocess
+import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -48,6 +51,7 @@ class RunArtifacts:
     run_output: Path
     signal_output: Path | None
     candidate_outputs: list[Path]
+    exit_code: int = 0
 
 
 def utc_now() -> datetime:
@@ -74,7 +78,7 @@ def load_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
     return json.loads(path.read_text())
 
 
-def write_json(path: Path, payload: dict[str, Any]) -> None:
+def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
 
 
@@ -101,12 +105,13 @@ def ensure_layout() -> None:
         STATE_DIR / "metrics.json",
         {"runs_by_mode": {}, "signals_by_type": {}, "patterns": {}},
     )
+    write_json_if_missing(STATE_DIR / "approved_rules.json", [])
     history_path = STATE_DIR / "history.jsonl"
     if not history_path.exists():
         history_path.write_text("")
 
 
-def write_json_if_missing(path: Path, payload: dict[str, Any]) -> None:
+def write_json_if_missing(path: Path, payload: Any) -> None:
     if not path.exists():
         write_json(path, payload)
 
@@ -176,7 +181,7 @@ def write_task_doc(args: argparse.Namespace, templates: dict[str, Any], routing:
     return task_id, task_path
 
 
-def build_run_summary(task_id: str, args: argparse.Namespace, task_path: Path, routing: dict[str, Any]) -> dict[str, Any]:
+def build_run_summary(task_id: str, args: argparse.Namespace, task_path: Path, routing: dict[str, Any], approved_rules: list[dict[str, Any]]) -> dict[str, Any]:
     route = routing.get(TASK_TEMPLATE_KEYS[args.mode], {}).get("flow", [])
     return {
         "task_id": task_id,
@@ -189,6 +194,7 @@ def build_run_summary(task_id: str, args: argparse.Namespace, task_path: Path, r
         "created_at": iso_now(),
         "verification": args.verification or "not-provided",
         "notes": args.notes,
+        "approved_rules": approved_rules,
     }
 
 
@@ -200,19 +206,19 @@ def signal_dir_for_mode(mode: str) -> Path:
     return SIGNAL_DIR / "fixes"
 
 
-def create_signal(task_id: str, args: argparse.Namespace) -> dict[str, Any]:
-    signal_type = SIGNAL_TYPES.get(args.mode)
-    if signal_type is None:
+def create_signal(task_id: str, args: argparse.Namespace, signal_type: str | None = None, pattern: str | None = None, notes: str | None = None) -> dict[str, Any]:
+    resolved_type = signal_type or SIGNAL_TYPES.get(args.mode)
+    if resolved_type is None:
         return {}
     return {
         "task_id": task_id,
-        "type": signal_type,
-        "pattern": args.pattern or args.title.lower(),
+        "type": resolved_type,
+        "pattern": pattern or args.pattern or args.title.lower(),
         "source": args.mode,
         "count": 1,
         "first_seen": iso_now(),
         "last_seen": iso_now(),
-        "notes": args.notes,
+        "notes": notes if notes is not None else args.notes,
     }
 
 
@@ -265,10 +271,12 @@ def write_candidate(pattern: str, count: int) -> Path:
     path = CANDIDATE_DIR / bucket / f"{slugify(pattern)}.md"
     content = (
         f"# {pattern}\n\n"
-        f"- occurrences: {count}\n"
-        f"- recommendation: {candidate_label(count)}\n"
-        f"- proposed_location: {candidate_location(count)}\n"
-        f"- approval_required: yes\n\n"
+        f"pattern: {pattern}\n"
+        f"approved: false\n"
+        f"occurrences: {count}\n"
+        f"recommendation: {candidate_label(count)}\n"
+        f"proposed_location: {candidate_location(count)}\n"
+        f"approval_required: yes\n\n"
         "## Evidence\n"
         "Repeated pattern observed in structured signals.\n\n"
         "## Proposed change\n"
@@ -278,34 +286,147 @@ def write_candidate(pattern: str, count: int) -> Path:
     return path
 
 
-def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: dict[str, Any]) -> RunArtifacts:
+def parse_candidate_rule(path: Path) -> dict[str, Any] | None:
+    raw = path.read_text(encoding="utf-8")
+    metadata: dict[str, str] = {}
+    for line in raw.splitlines():
+        if ": " in line and not line.startswith("#"):
+            key, value = line.split(": ", 1)
+            metadata[key.strip()] = value.strip()
+    if metadata.get("approved") != "true":
+        return None
+    return {
+        "pattern": metadata.get("pattern", path.stem.replace("-", " ")),
+        "recommendation": metadata.get("recommendation", "candidate soft rule"),
+        "proposed_location": metadata.get("proposed_location", "docs/RULES.md"),
+        "source": str(path.relative_to(ROOT)),
+    }
+
+
+def sync_approved_rules() -> list[dict[str, Any]]:
+    approved_rules = [
+        rule
+        for path in sorted((CANDIDATE_DIR / "rules").glob("*.md"))
+        if (rule := parse_candidate_rule(path)) is not None
+    ]
+    write_json(STATE_DIR / "approved_rules.json", approved_rules)
+    return approved_rules
+
+
+def gate_blockers(args: argparse.Namespace, gates: dict[str, Any], approved_rules: list[dict[str, Any]]) -> list[str]:
+    blockers: list[str] = []
+    verification_text = (args.verification or "").lower()
+    for gate_name, gate_cfg in gates.get("gates", {}).items():
+        enabled = bool(gate_cfg.get("enabled")) or any(rule["pattern"] == gate_cfg.get("pattern") for rule in approved_rules)
+        if not enabled:
+            continue
+        action = gate_cfg.get("action")
+        if action == "require_browser_proof_for_ui_changes" and "browser" not in verification_text:
+            blockers.append(gate_name)
+    return blockers
+
+
+def render_superpower_prompt(step: str, args: argparse.Namespace, task_doc: Path, approved_rules: list[dict[str, Any]]) -> str:
+    rules_text = "\n".join(f"- {rule['pattern']} ({rule['recommendation']})" for rule in approved_rules) or "- none"
+    return (
+        f"step: {step}\n"
+        f"mode: {args.mode}\n"
+        f"title: {args.title}\n"
+        f"goal: {args.goal or 'n/a'}\n"
+        f"task_doc: {task_doc}\n"
+        f"verification: {args.verification or 'n/a'}\n"
+        f"approved_rules:\n{rules_text}\n"
+    )
+
+
+def dispatch_route(route: list[str], args: argparse.Namespace, task_doc: Path, approved_rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    command = shlex.split(__import__("os").environ.get("SO2X_SYSTEM_SUPERPOWER_COMMAND", "").strip())
+    results: list[dict[str, Any]] = []
+    for step in route:
+        prompt_text = render_superpower_prompt(step, args, task_doc, approved_rules)
+        if not command:
+            results.append({"step": step, "status": "simulated", "prompt": prompt_text})
+            continue
+        with tempfile.TemporaryDirectory() as tmpdir:
+            tmpdir_path = Path(tmpdir)
+            prompt_file = tmpdir_path / "prompt.txt"
+            rules_file = tmpdir_path / "rules.json"
+            prompt_file.write_text(prompt_text, encoding="utf-8")
+            write_json(rules_file, approved_rules)
+            proc = subprocess.run(
+                [*command, "--step", step, "--prompt-file", str(prompt_file), "--task-doc", str(task_doc), "--rules-file", str(rules_file)],
+                cwd=ROOT,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        if proc.returncode != 0:
+            results.append({"step": step, "status": "failed", "returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr, "prompt": prompt_text})
+            break
+        payload = json.loads(proc.stdout) if proc.stdout.strip() else {"status": "success"}
+        payload.setdefault("step", step)
+        payload.setdefault("status", "success")
+        payload.setdefault("prompt", prompt_text)
+        results.append(payload)
+    return results
+
+
+def write_signal_file(args: argparse.Namespace, task_path: Path, signal: dict[str, Any]) -> Path | None:
+    if not signal:
+        return None
+    signal_output = signal_dir_for_mode(args.mode) / f"{task_path.stem}.json"
+    write_json(signal_output, signal)
+    return signal_output
+
+
+def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: dict[str, Any], gates: dict[str, Any]) -> RunArtifacts:
+    approved_rules = sync_approved_rules()
     task_id, task_path = write_task_doc(args, templates, routing)
     mode_bucket = MODE_TO_BUCKET[args.mode]
-    run_summary = build_run_summary(task_id, args, task_path, routing)
+    route = routing.get(TASK_TEMPLATE_KEYS[args.mode], {}).get("flow", [])
+    run_summary = build_run_summary(task_id, args, task_path, routing, approved_rules)
     run_output = OUTPUT_RUN_DIR / f"{task_path.stem}.json"
+
+    blockers = gate_blockers(args, gates, approved_rules)
+    if blockers:
+        run_summary.update({"status": "blocked", "blocked_by": blockers, "dispatch_results": []})
+        write_json(run_output, run_summary)
+        signal = create_signal(task_id, args, signal_type="gate_block", pattern=blockers[0], notes="Blocked by approved gate")
+        signal_output = write_signal_file(args, task_path, signal)
+        append_history(run_summary)
+        update_state(task_path, mode_bucket, signal)
+        return RunArtifacts(task_doc=task_path, run_output=run_output, signal_output=signal_output, candidate_outputs=[], exit_code=2)
+
+    dispatch_results = dispatch_route(route, args, task_path, approved_rules)
+    failed_steps = [step for step in dispatch_results if step.get("status") == "failed"]
+    run_summary.update({
+        "status": "failed" if failed_steps else "success",
+        "dispatch_results": dispatch_results,
+    })
     write_json(run_output, run_summary)
 
     signal = create_signal(task_id, args)
-    signal_output = None
-    if signal:
-        signal_output = signal_dir_for_mode(args.mode) / f"{task_path.stem}.json"
-        write_json(signal_output, signal)
+    if failed_steps:
+        signal = create_signal(task_id, args, signal_type="dispatch_failure", pattern=failed_steps[0]["step"], notes=failed_steps[0].get("stderr", "dispatch failed"))
+    signal_output = write_signal_file(args, task_path, signal)
 
     append_history(run_summary)
     update_state(task_path, mode_bucket, signal)
-    return RunArtifacts(task_doc=task_path, run_output=run_output, signal_output=signal_output, candidate_outputs=[])
+    return RunArtifacts(task_doc=task_path, run_output=run_output, signal_output=signal_output, candidate_outputs=[], exit_code=1 if failed_steps else 0)
 
 
 def run_self_improve(args: argparse.Namespace, templates: dict[str, Any], routing: dict[str, Any]) -> RunArtifacts:
     task_id, task_path = write_task_doc(args, templates, routing)
     counts = collect_pattern_counts()
     candidates = [write_candidate(pattern, count) for pattern, count in sorted(counts.items()) if count >= 2]
+    approved_rules = sync_approved_rules()
     run_output = OUTPUT_RUN_DIR / f"{task_path.stem}.json"
     payload = {
         "task_id": task_id,
         "mode": args.mode,
         "title": args.title,
         "generated_candidates": [str(path.relative_to(ROOT)) for path in candidates],
+        "approved_rules": approved_rules,
         "created_at": iso_now(),
     }
     write_json(run_output, payload)
@@ -314,19 +435,19 @@ def run_self_improve(args: argparse.Namespace, templates: dict[str, Any], routin
     return RunArtifacts(task_doc=task_path, run_output=run_output, signal_output=None, candidate_outputs=candidates)
 
 
-def load_configs() -> tuple[dict[str, Any], dict[str, Any]]:
+def load_configs() -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any]]:
     routing = load_yaml(CONFIG_DIR / "routing.yaml")
     templates = load_yaml(CONFIG_DIR / "templates.yaml")
-    _ = load_yaml(CONFIG_DIR / "evolution.yaml")
-    _ = load_yaml(CONFIG_DIR / "gates.yaml")
-    return routing, templates
+    evolution = load_yaml(CONFIG_DIR / "evolution.yaml")
+    gates = load_yaml(CONFIG_DIR / "gates.yaml")
+    return routing, templates, evolution, gates
 
 
 def main() -> int:
     ensure_layout()
     args = parse_args()
-    routing, templates = load_configs()
-    artifacts = run_self_improve(args, templates, routing) if args.mode == "self-improve" else run_standard(args, templates, routing)
+    routing, templates, _evolution, gates = load_configs()
+    artifacts = run_self_improve(args, templates, routing) if args.mode == "self-improve" else run_standard(args, templates, routing, gates)
     response = {
         "task_doc": str(artifacts.task_doc.relative_to(ROOT)),
         "run_output": str(artifacts.run_output.relative_to(ROOT)),
@@ -334,7 +455,7 @@ def main() -> int:
         "candidate_outputs": [str(path.relative_to(ROOT)) for path in artifacts.candidate_outputs],
     }
     print(json.dumps(response))
-    return 0
+    return artifacts.exit_code
 
 
 if __name__ == "__main__":

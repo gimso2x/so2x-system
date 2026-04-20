@@ -53,11 +53,12 @@ def test_install_force_overwrites_existing_files(tmp_path: Path) -> None:
     assert "so2x-system" in existing.read_text(encoding="utf-8")
 
 
-def test_claude_command_calls_project_local_runner() -> None:
+def test_claude_command_calls_project_local_runner_and_requires_superpowers() -> None:
     command_doc = (ROOT / ".claude" / "commands" / "flow-init.md").read_text(encoding="utf-8")
 
     assert "python3 .so2x-system/scripts/execute.py flow-init" in command_doc
     assert "allowed-tools:" in command_doc
+    assert "/plugin install superpowers@claude-plugins-official" in command_doc
 
 
 def test_readme_documents_project_local_ai_install_flow() -> None:
@@ -79,3 +80,11 @@ def test_readme_documents_shell_install_flow() -> None:
     assert "rmdir .tmp 2>/dev/null || true" in readme
     assert "test -f .so2x-system/scripts/execute.py" in readme
     assert "test -f .claude/commands/flow-init.md" in readme
+
+
+def test_readme_documents_superpowers_plugin_prerequisite() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "superpowers plugin은 별도로 설치" in readme
+    assert "/plugin install superpowers@claude-plugins-official" in readme
+    assert "https://github.com/obra/superpowers" in readme
