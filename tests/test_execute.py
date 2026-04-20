@@ -6,46 +6,28 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-SCRIPT = ROOT / "scripts" / "execute.py"
-RESET_PATHS = [
-    ROOT / "tasks" / "feature",
-    ROOT / "tasks" / "qa",
-    ROOT / "tasks" / "review",
-    ROOT / "signals" / "fixes",
-    ROOT / "signals" / "qa-failures",
-    ROOT / "signals" / "review-notes",
-    ROOT / "signals" / "repeated-patterns",
-    ROOT / "candidates" / "rules",
-    ROOT / "candidates" / "skills",
-    ROOT / "outputs" / "runs",
-    ROOT / "state",
-]
+SOURCE_ROOT = Path(__file__).resolve().parents[1]
+COPY_EXCLUDE = shutil.ignore_patterns(
+    ".git",
+    ".pytest_cache",
+    "__pycache__",
+    ".venv",
+    "*.pyc",
+)
 
 
-def reset_repo_state() -> None:
-    for path in RESET_PATHS:
-        shutil.rmtree(path, ignore_errors=True)
-        path.mkdir(parents=True, exist_ok=True)
-        if path.parts[-2:] in [
-            ("tasks", "feature"),
-            ("tasks", "qa"),
-            ("tasks", "review"),
-            ("signals", "fixes"),
-            ("signals", "qa-failures"),
-            ("signals", "review-notes"),
-            ("signals", "repeated-patterns"),
-            ("candidates", "rules"),
-            ("candidates", "skills"),
-            ("outputs", "runs"),
-        ]:
-            (path / ".gitkeep").write_text("")
+def make_workspace(name: str) -> Path:
+    workspace = Path("/tmp") / f"so2x-system-{name}"
+    shutil.rmtree(workspace, ignore_errors=True)
+    shutil.copytree(SOURCE_ROOT, workspace, ignore=COPY_EXCLUDE)
+    return workspace
 
 
-def run_cmd(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cmd(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    script = workspace / "scripts" / "execute.py"
     return subprocess.run(
-        [sys.executable, str(SCRIPT), *args],
-        cwd=ROOT,
+        [sys.executable, str(script), *args],
+        cwd=workspace,
         text=True,
         capture_output=True,
         check=False,
@@ -53,9 +35,10 @@ def run_cmd(*args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_flow_feature_creates_task_run_signal_and_state() -> None:
-    reset_repo_state()
+    root = make_workspace("feature")
 
     result = run_cmd(
+        root,
         "flow-feature",
         "--title",
         "Add signal promotion",
@@ -71,11 +54,11 @@ def test_flow_feature_creates_task_run_signal_and_state() -> None:
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    task_path = ROOT / payload["task_doc"]
-    run_path = ROOT / payload["run_output"]
-    signal_path = ROOT / payload["signal_output"]
-    history_path = ROOT / "state" / "history.jsonl"
-    metrics_path = ROOT / "state" / "metrics.json"
+    task_path = root / payload["task_doc"]
+    run_path = root / payload["run_output"]
+    signal_path = root / payload["signal_output"]
+    history_path = root / "state" / "history.jsonl"
+    metrics_path = root / "state" / "metrics.json"
 
     assert task_path.exists()
     assert run_path.exists()
@@ -90,10 +73,11 @@ def test_flow_feature_creates_task_run_signal_and_state() -> None:
 
 
 def test_self_improve_promotes_repeated_patterns() -> None:
-    reset_repo_state()
+    root = make_workspace("self-improve")
 
     for _ in range(3):
         result = run_cmd(
+            root,
             "flow-qa",
             "--title",
             "Missing browser proof",
@@ -104,12 +88,12 @@ def test_self_improve_promotes_repeated_patterns() -> None:
         )
         assert result.returncode == 0, result.stderr
 
-    result = run_cmd("self-improve", "--title", "Promote repeated QA failures")
+    result = run_cmd(root, "self-improve", "--title", "Promote repeated QA failures")
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["candidate_outputs"]
-    candidate_path = ROOT / payload["candidate_outputs"][0]
+    candidate_path = root / payload["candidate_outputs"][0]
     assert candidate_path.exists()
 
     candidate_text = candidate_path.read_text()

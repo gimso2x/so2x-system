@@ -1,6 +1,3 @@
 {
-  "latest_task_by_mode": {
-    "qa": "tasks/qa/task-003-missing-browser-proof.md",
-    "review": "tasks/review/task-004-promote-repeated-qa-failures.md"
-  }
+  "latest_task_by_mode": {}
 }

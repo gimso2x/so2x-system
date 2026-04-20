@@ -1,12 +1,5 @@
 {
-  "runs_by_mode": {
-    "qa": 3,
-    "review": 1
-  },
-  "signals_by_type": {
-    "qa_failure": 3
-  },
-  "patterns": {
-    "browser verification missing": 3
-  }
+  "runs_by_mode": {},
+  "signals_by_type": {},
+  "patterns": {}
 }
