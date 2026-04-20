@@ -93,16 +93,21 @@ def test_flow_feature_dispatches_superpower_steps_and_records_results() -> None:
     run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
 
     assert run_output['status'] == 'success'
-    assert [step['step_id'] for step in run_output['dispatch_results']] == [
+    assert [step['id'] for step in run_output['dispatch_plan']] == [
         'feature-brainstorm',
         'feature-plan',
         'feature-build',
     ]
-    assert [step['kind'] for step in run_output['dispatch_results']] == ['skill', 'skill', 'skill']
-    assert [step['target'] for step in run_output['dispatch_results']] == [
+    assert [step['target'] for step in run_output['dispatch_plan']] == [
         'superpowers:brainstorming',
         'superpowers:writing-plans',
         'superpowers:subagent-driven-development',
+    ]
+    assert run_output['gate_results'] == {'status': 'passed', 'blockers': []}
+    assert [step['step_id'] for step in run_output['dispatch_results']] == [
+        'feature-brainstorm',
+        'feature-plan',
+        'feature-build',
     ]
     assert all(step['status'] == 'success' for step in run_output['dispatch_results'])
 
@@ -148,7 +153,7 @@ def test_approved_rule_is_reapplied_to_future_runs() -> None:
     gated_payload = json.loads(gated_result.stdout)
     blocked_run = json.loads((root / gated_payload['run_output']).read_text(encoding='utf-8'))
     assert blocked_run['status'] == 'blocked'
-    assert blocked_run['blocked_by'] == ['browser_verification']
+    assert blocked_run['gate_results'] == {'status': 'blocked', 'blockers': ['browser_verification']}
 
     allowed_result = run_cmd(
         root,
@@ -186,6 +191,11 @@ def test_self_improve_dispatches_internal_steps_only() -> None:
     payload = json.loads(result.stdout)
     run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
 
+    assert [step['id'] for step in run_output['dispatch_plan']] == [
+        'improve-pattern-analysis',
+        'improve-writing-skills',
+    ]
+    assert run_output['gate_results'] == {'status': 'passed', 'blockers': []}
     assert [step['kind'] for step in run_output['dispatch_results']] == ['internal', 'internal']
     assert [step['target'] for step in run_output['dispatch_results']] == [
         'pattern-analysis',

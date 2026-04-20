@@ -189,13 +189,13 @@ def write_task_doc(args: argparse.Namespace, templates: dict[str, Any], routing:
 
 
 def build_run_summary(task_id: str, args: argparse.Namespace, task_path: Path, routing: dict[str, Any], approved_rules: list[dict[str, Any]]) -> dict[str, Any]:
-    route = route_steps_for_mode(routing, args.mode)
+    dispatch_plan = route_steps_for_mode(routing, args.mode)
     return {
         "task_id": task_id,
         "mode": args.mode,
         "title": args.title,
         "goal": args.goal,
-        "route": route,
+        "dispatch_plan": dispatch_plan,
         "task_doc": str(task_path.relative_to(ROOT)),
         "status": "recorded",
         "created_at": iso_now(),
@@ -406,8 +406,12 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
     run_output = OUTPUT_RUN_DIR / f"{task_path.stem}.json"
 
     blockers = gate_blockers(args, gates, approved_rules)
+    gate_results = {
+        "status": "blocked" if blockers else "passed",
+        "blockers": blockers,
+    }
     if blockers:
-        run_summary.update({"status": "blocked", "blocked_by": blockers, "dispatch_results": []})
+        run_summary.update({"status": "blocked", "gate_results": gate_results, "dispatch_results": []})
         write_json(run_output, run_summary)
         signal = create_signal(task_id, args, signal_type="gate_block", pattern=blockers[0], notes="Blocked by approved gate")
         signal_output = write_signal_file(args, task_path, signal)
@@ -419,6 +423,7 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
     failed_steps = [step for step in dispatch_results if step.get("status") == "failed"]
     run_summary.update({
         "status": "failed" if failed_steps else "success",
+        "gate_results": gate_results,
         "dispatch_results": dispatch_results,
     })
     write_json(run_output, run_summary)
@@ -451,6 +456,8 @@ def run_self_improve(args: argparse.Namespace, templates: dict[str, Any], routin
         "task_id": task_id,
         "mode": args.mode,
         "title": args.title,
+        "dispatch_plan": route_steps_for_mode(routing, args.mode),
+        "gate_results": {"status": "passed", "blockers": []},
         "dispatch_results": dispatch_results,
         "generated_candidates": [str(path.relative_to(ROOT)) for path in candidates],
         "approved_rules": approved_rules,

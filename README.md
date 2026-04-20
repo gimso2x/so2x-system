@@ -105,7 +105,7 @@ your-project/
 - `.claude/commands/`는 Claude slash command surface다.
 - `.so2x-system/`는 실제 실행 로직과 상태를 담는 로컬 scaffold다.
 - 설치된 superpowers plugin은 Claude 안에서 실제 skill execution을 맡는다.
-- 즉, **Claude에서는 `/flow-init`로 진입하고, so2x-system은 task/run/signal/gate/state를 기록하고, 실제 workflow skill은 superpowers가 수행한다.**
+- 즉, **Claude에서는 `/flow-init`로 진입하고, so2x-system은 `dispatch_plan`과 `gate_results`를 만들고 task/run/signal/gate/state를 기록하며, 실제 workflow skill은 superpowers가 수행한다.**
 - Claude 밖 자동화가 필요하면 `SO2X_SYSTEM_SUPERPOWER_COMMAND` 환경변수로 별도 실행기를 연결할 수도 있다.
 
 ## 실제 연결 방식
@@ -117,8 +117,11 @@ your-project/
 -> .claude/commands/*.md
 -> .so2x-system/scripts/execute.py 호출
 -> runner가 task/run/signal/state 생성
--> route를 읽고 approved rule / gate를 반영
--> Claude 안에서는 설치된 superpowers skill을 따라 실제 workflow 진행
+-> routing을 읽어 dispatch_plan 생성
+-> approved rule / gate를 반영해 gate_results 생성
+-> Claude 안에서는 gate_results를 먼저 확인
+-> 그 다음 dispatch_plan 순서대로 superpowers:* skill 실행
+-> dispatch_results에 실행 결과 기록
 -> self-improve가 candidate rule/skill 생성
 -> candidate 파일에서 approved: true 로 승인되면 다음 실행에 자동 재주입
 ```
@@ -144,8 +147,13 @@ python3 .so2x-system/scripts/execute.py self-improve --title "Promote recurring 
 별도 실행기를 붙이고 싶으면:
 ```bash
 export SO2X_SYSTEM_SUPERPOWER_COMMAND="python3 ./mock_superpower_runner.py"
-python3 .so2x-system/scripts/execute.py flow-feature --title "Example" --goal "Dispatch route steps"
+python3 .so2x-system/scripts/execute.py flow-feature --title "Example" --goal "Dispatch plan steps"
 ```
+
+실행 결과의 핵심 필드:
+- `dispatch_plan`: Claude가 순서대로 따라야 할 step 목록
+- `gate_results`: 실행 전 먼저 확인해야 할 gate 상태
+- `dispatch_results`: so2x-system이 기록한 실행 결과 surface
 
 ## 테스트
 
