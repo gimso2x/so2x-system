@@ -328,3 +328,50 @@ def test_adapter_marks_invalid_stdout_json_contract_as_failed() -> None:
     assert first_step['status'] == 'failed'
     assert first_step['stderr'] == 'invalid json contract'
     assert first_step['input'] == run_output['dispatch_plan'][0]['input']
+
+
+def test_missing_superpower_command_fails_with_explicit_message() -> None:
+    root = make_workspace('missing-superpower-command')
+
+    result = run_cmd(
+        root,
+        'flow-feature',
+        '--title',
+        'CLI-only change',
+        '--goal',
+        'Exercise missing runner contract',
+        '--files',
+        'src/cli.py',
+        env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': ''},
+    )
+
+    assert result.returncode == 1, result.stderr
+    payload = json.loads(result.stdout)
+    run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
+
+    assert run_output['status'] == 'failed'
+    assert run_output['dispatch_results'][0]['status'] == 'failed'
+    assert 'SO2X_SYSTEM_SUPERPOWER_COMMAND is not configured' in run_output['dispatch_results'][0]['stderr']
+
+
+def test_simulated_dispatch_is_marked_simulated_not_success() -> None:
+    root = make_workspace('simulated-dispatch')
+
+    result = run_cmd(
+        root,
+        'flow-feature',
+        '--title',
+        'CLI-only change',
+        '--goal',
+        'Exercise simulated status aggregation',
+        '--files',
+        'src/cli.py',
+        env={'SO2X_SYSTEM_ALLOW_SIMULATED_SUPERPOWERS': '1'},
+    )
+
+    assert result.returncode == 3, result.stderr
+    payload = json.loads(result.stdout)
+    run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
+
+    assert run_output['status'] == 'simulated'
+    assert all(step['status'] == 'simulated' for step in run_output['dispatch_results'])

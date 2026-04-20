@@ -24,6 +24,7 @@ def test_install_copies_claude_command_surface_and_system_scaffold(tmp_path: Pat
     assert "step 1/4: copy scaffold files" in result.stdout
     assert "step 4/4: install complete" in result.stdout
     assert "next_step_cli: /flow-init" in result.stdout
+    assert "claude_md_patched: False" in result.stdout
     assert (target / ".so2x-system" / "scripts" / "execute.py").exists()
     assert (target / ".so2x-system" / "config" / "routing.yaml").exists()
     assert (target / ".so2x-system" / "docs" / "PRD.md").exists()
@@ -59,6 +60,24 @@ def test_claude_command_calls_project_local_runner_and_requires_superpowers() ->
     assert "python3 .so2x-system/scripts/execute.py flow-init" in command_doc
     assert "allowed-tools:" in command_doc
     assert "/plugin install superpowers@claude-plugins-official" in command_doc
+    assert "installed and enabled" in command_doc
+    assert "simulated" in command_doc
+
+
+def test_install_patch_claude_md_writes_managed_block(tmp_path: Path) -> None:
+    target = tmp_path / "app"
+    target.mkdir(parents=True, exist_ok=True)
+    claude_md = target / "CLAUDE.md"
+    claude_md.write_text("# Project\n\nlocal notes\n", encoding="utf-8")
+
+    result = run_install(target, "--patch-claude-md")
+
+    assert "claude_md_patched: True" in result.stdout
+    content = claude_md.read_text(encoding="utf-8")
+    assert "<!-- so2x-system:managed:start -->" in content
+    assert ".claude/commands/flow-init.md" in content
+    assert ".so2x-system/scripts/execute.py" in content
+    assert "superpowers plugin은 별도로 설치" in content
 
 
 def test_readme_documents_project_local_ai_install_flow() -> None:

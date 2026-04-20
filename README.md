@@ -103,7 +103,6 @@ your-project/
 │       └── self-improve.md
 └── .so2x-system/
     ├── config/
-    ├── commands/
     ├── docs/
     ├── scripts/
     ├── src/
@@ -117,6 +116,8 @@ your-project/
 - `.claude/commands/` = Claude slash command surface
 - `.so2x-system/` = 로컬 runtime/state scaffold
 - 실제 skill execution = 설치된 superpowers plugin
+- superpowers는 Claude 안에서 **installed and enabled** 상태여야 실제 dispatch가 실행된다
+- 실행기가 없으면 run output은 `simulated` 또는 명시적 `failed` 상태로 남는다
 
 ## 현재 routing 개요
 

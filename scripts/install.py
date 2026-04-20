@@ -6,16 +6,28 @@ import shutil
 from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
-COPY_DIRS = ['.claude', 'config', 'commands', 'docs', 'scripts', 'src', 'tasks', 'signals', 'candidates', 'outputs', 'state']
+COPY_DIRS = ['.claude', 'config', 'docs', 'scripts', 'src', 'tasks', 'signals', 'candidates', 'outputs', 'state']
 SKIP_NAMES = {'__pycache__', '.git', '.pytest_cache', 'tests', 'README.md'}
 TASK_TEMPLATE_SUFFIXES = {'.gitkeep'}
+CLAUDE_MANAGED_START = '<!-- so2x-system:managed:start -->'
+CLAUDE_MANAGED_END = '<!-- so2x-system:managed:end -->'
+CLAUDE_MANAGED_BLOCK = f"""{CLAUDE_MANAGED_START}
+## so2x-system
+
+- `.claude/commands/flow-init.md` 등 slash command surface가 설치되어 있어야 `/flow-init`를 바로 쓸 수 있습니다.
+- `.so2x-system/scripts/execute.py` 가 로컬 runner 진입점입니다.
+- `superpowers plugin은 별도로 설치`해야 하며, Claude 안에서 installed and enabled 상태여야 실제 dispatch가 실행됩니다.
+- plugin/runner가 없으면 run output은 `simulated` 또는 명시적 `failed` 상태를 기록합니다.
+- shell/CI에서 외부 실행기를 붙일 때는 `SO2X_SYSTEM_SUPERPOWER_COMMAND` 를 설정하세요.
+{CLAUDE_MANAGED_END}
+"""
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Install so2x-system into a target project')
     parser.add_argument('--target', default='.', help='Target project root (default: current directory)')
     parser.add_argument('--force', action='store_true', help='Overwrite existing files')
-    parser.add_argument('--patch-claude-md', action='store_true', help='Reserved for future Claude guidance patching')
+    parser.add_argument('--patch-claude-md', action='store_true', help='Patch target CLAUDE.md with so2x-system guidance')
     return parser.parse_args()
 
 
@@ -67,6 +79,26 @@ def verify_install(target_root: Path) -> list[str]:
     return [rel for rel in required if not (target_root / rel).exists()]
 
 
+def patch_claude_md(target_root: Path) -> bool:
+    claude_md = target_root / 'CLAUDE.md'
+    if claude_md.exists():
+        existing = claude_md.read_text(encoding='utf-8').rstrip()
+    else:
+        existing = '# CLAUDE\n'
+
+    if CLAUDE_MANAGED_START in existing and CLAUDE_MANAGED_END in existing:
+        start = existing.index(CLAUDE_MANAGED_START)
+        end = existing.index(CLAUDE_MANAGED_END) + len(CLAUDE_MANAGED_END)
+        updated = (existing[:start].rstrip() + '\n\n' + CLAUDE_MANAGED_BLOCK).strip() + '\n'
+    else:
+        updated = existing.rstrip() + '\n\n' + CLAUDE_MANAGED_BLOCK + '\n'
+
+    if updated == (claude_md.read_text(encoding='utf-8') if claude_md.exists() else ''):
+        return False
+    claude_md.write_text(updated, encoding='utf-8')
+    return True
+
+
 def main() -> int:
     args = parse_args()
     target_root = Path(args.target).resolve()
@@ -83,7 +115,8 @@ def main() -> int:
         raise SystemExit(1)
 
     print('step 3/4: patch CLAUDE.md')
-    print(f'claude_md_patched: {False}')
+    patched = patch_claude_md(target_root) if args.patch_claude_md else False
+    print(f'claude_md_patched: {patched}')
 
     print('step 4/4: install complete')
     print('next_step: flow-init으로 이 프로젝트를 초기화해줘.')

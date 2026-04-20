@@ -456,8 +456,10 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
 
     dispatch_results = dispatch_flow(args, dispatch_plan, task_path, approved_rules)
     failed_steps = [step for step in dispatch_results if step.get("status") == "failed"]
+    simulated_steps = [step for step in dispatch_results if step.get("status") == "simulated"]
+    run_status = "failed" if failed_steps else "simulated" if simulated_steps else "success"
     run_summary.update({
-        "status": "failed" if failed_steps else "success",
+        "status": run_status,
         "gate_results": gate_results,
         "dispatch_results": dispatch_results,
     })
@@ -478,7 +480,8 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
 
     append_history(run_summary)
     update_state(task_path, mode_bucket, signal)
-    return RunArtifacts(task_doc=task_path, run_output=run_output, signal_output=signal_output, candidate_outputs=[], exit_code=1 if failed_steps else 0)
+    exit_code = 1 if failed_steps else 3 if simulated_steps else 0
+    return RunArtifacts(task_doc=task_path, run_output=run_output, signal_output=signal_output, candidate_outputs=[], exit_code=exit_code)
 
 
 def run_self_improve(args: argparse.Namespace, templates: dict[str, Any], routing: dict[str, Any]) -> RunArtifacts:

@@ -43,6 +43,10 @@ def normalize_skill_result(raw_payload: dict[str, Any], base_payload: dict[str, 
     return payload
 
 
+def allow_simulated_superpowers() -> bool:
+    return os.environ.get("SO2X_SYSTEM_ALLOW_SIMULATED_SUPERPOWERS", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def run_superpowers_skill(
     step: dict[str, Any],
     *,
@@ -80,7 +84,33 @@ def run_superpowers_skill(
         },
     }
     if not command:
-        return normalize_skill_result({"status": "simulated"}, base_payload)
+        if allow_simulated_superpowers():
+            return normalize_skill_result(
+                {
+                    "status": "simulated",
+                    "summary": "superpowers execution simulated because no external runner was configured",
+                    "next_steps": [
+                        "Configure SO2X_SYSTEM_SUPERPOWER_COMMAND to execute real superpowers steps.",
+                    ],
+                },
+                base_payload,
+            )
+        return normalize_skill_result(
+            {
+                "status": "failed",
+                "stderr": (
+                    "SO2X_SYSTEM_SUPERPOWER_COMMAND is not configured. "
+                    "Install and enable the superpowers plugin for Claude, or set "
+                    "SO2X_SYSTEM_SUPERPOWER_COMMAND for shell/CI execution."
+                ),
+                "summary": "superpowers execution runner missing",
+                "next_steps": [
+                    "Install and enable superpowers in Claude.",
+                    "Or set SO2X_SYSTEM_SUPERPOWER_COMMAND to a real external runner.",
+                ],
+            },
+            base_payload,
+        )
 
     with tempfile.TemporaryDirectory() as tmpdir:
         tmpdir_path = Path(tmpdir)
