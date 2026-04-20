@@ -1,0 +1,15 @@
+feature:
+  flow:
+    - brainstorming
+    - writing-plans
+    - subagent-driven-development
+qa:
+  flow:
+    - systematic-debugging
+review:
+  flow:
+    - requesting-code-review
+self_improve:
+  flow:
+    - pattern-analysis
+    - writing-skills

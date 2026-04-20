@@ -1,0 +1,66 @@
+feature:
+  flow_key: feature
+  sections:
+    - title: Goal
+      key: goal
+      placeholder: Describe the feature goal.
+    - title: Scope
+      key: scope
+      placeholder: Define the feature scope.
+    - title: Files
+      key: files
+      placeholder: List likely files to touch.
+    - title: Verification
+      key: verification
+      placeholder: Define how this run will be verified.
+    - title: Notes
+      key: notes
+      placeholder: Add execution notes.
+qa:
+  flow_key: qa
+  sections:
+    - title: Goal
+      key: goal
+      placeholder: Describe the failing behavior.
+    - title: Scope
+      key: scope
+      placeholder: Note suspected scope.
+    - title: Pattern
+      key: pattern
+      placeholder: Capture the repeated failure pattern.
+    - title: Verification
+      key: verification
+      placeholder: Define regression checks.
+    - title: Notes
+      key: notes
+      placeholder: Add QA notes.
+review:
+  flow_key: review
+  sections:
+    - title: Goal
+      key: goal
+      placeholder: Describe the review request.
+    - title: Scope
+      key: scope
+      placeholder: Describe review scope.
+    - title: Files
+      key: files
+      placeholder: List reviewed files.
+    - title: Verification
+      key: verification
+      placeholder: Note review checks.
+    - title: Notes
+      key: notes
+      placeholder: Add review notes.
+self_improve:
+  flow_key: self_improve
+  sections:
+    - title: Goal
+      key: goal
+      placeholder: Summarize the self-improve intent.
+    - title: Scope
+      key: scope
+      placeholder: Define the signal window or project scope.
+    - title: Notes
+      key: notes
+      placeholder: Add promotion notes.

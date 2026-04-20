@@ -1,0 +1,7 @@
+thresholds:
+  record_only: 1
+  soft_rule: 2
+  hard_gate: 3
+promotion:
+  require_human_approval: true
+  global_candidate_requires_cross_project_repetition: true

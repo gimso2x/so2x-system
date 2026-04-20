@@ -1,0 +1,10 @@
+{
+  "task_id": "task-002",
+  "type": "qa_failure",
+  "pattern": "browser verification missing",
+  "source": "flow-qa",
+  "count": 1,
+  "first_seen": "2026-04-20T04:33:29Z",
+  "last_seen": "2026-04-20T04:33:29Z",
+  "notes": ""
+}

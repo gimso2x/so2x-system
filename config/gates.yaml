@@ -1,0 +1,5 @@
+gates:
+  browser_verification:
+    enabled: false
+    pattern: browser verification missing
+    action: require_browser_proof_for_ui_changes
