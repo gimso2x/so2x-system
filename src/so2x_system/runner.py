@@ -410,18 +410,18 @@ def dispatch_flow(args: argparse.Namespace, dispatch_plan: list[dict[str, Any]],
         if step.get("kind") == "internal":
             results.append(run_internal_step(step, args, task_doc, approved_rules))
             continue
-        results.append(
-            run_superpowers_skill(
-                {"id": step["step_id"], "target": step["target"]},
-                mode=args.mode,
-                title=args.title,
-                goal=args.goal,
-                verification=args.verification,
-                task_doc=task_doc,
-                approved_rules=approved_rules,
-                cwd=ROOT,
-            )
+        result = run_superpowers_skill(
+            {"id": step["step_id"], "target": step["target"]},
+            mode=args.mode,
+            title=args.title,
+            goal=args.goal,
+            verification=args.verification,
+            task_doc=task_doc,
+            approved_rules=approved_rules,
+            cwd=ROOT,
         )
+        result["input"] = step["input"]
+        results.append(result)
         if results[-1].get("status") == "failed":
             break
     return results

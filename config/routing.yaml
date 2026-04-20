@@ -14,6 +14,9 @@ qa:
     - id: qa-debug
       kind: skill
       target: superpowers:systematic-debugging
+    - id: qa-verify
+      kind: skill
+      target: superpowers:verification-before-completion
 review:
   flow:
     - id: review-code

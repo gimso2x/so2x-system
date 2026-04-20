@@ -129,5 +129,16 @@ def run_superpowers_skill(
         stdout_lines = [line for line in proc.stdout.splitlines() if line.strip()]
         if not stdout_lines:
             return normalize_skill_result({"status": "success"}, base_payload)
-        payload = json.loads(stdout_lines[-1])
+        try:
+            payload = json.loads(stdout_lines[-1])
+        except json.JSONDecodeError:
+            return {
+                **base_payload,
+                "status": "failed",
+                "stderr": "invalid json contract",
+                "stdout": proc.stdout,
+                "artifacts": [],
+                "summary": "",
+                "next_steps": [],
+            }
         return normalize_skill_result(payload, base_payload)

@@ -65,6 +65,22 @@ print(json.dumps({'status': 'success', 'summary': f'stdout {args.step}', 'artifa
 '''
 
 
+MOCK_INVALID_STDOUT_RUNNER = '''from __future__ import annotations
+
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--step', required=True)
+parser.add_argument('--prompt-file', required=True)
+parser.add_argument('--task-doc', required=True)
+parser.add_argument('--rules-file', required=True)
+parser.add_argument('--output-file', required=True)
+parser.parse_args()
+
+print('not-json-last-line')
+'''
+
+
 def make_workspace(name: str) -> Path:
     workspace = Path('/tmp') / f'so2x-system-{name}'
     shutil.rmtree(workspace, ignore_errors=True)
@@ -133,6 +149,7 @@ def test_flow_feature_dispatches_superpower_steps_and_records_results() -> None:
         'feature-plan',
         'feature-build',
     ]
+    assert [step['input'] for step in run_output['dispatch_results']] == [step['input'] for step in run_output['dispatch_plan']]
     assert all(step['status'] == 'success' for step in run_output['dispatch_results'])
     assert run_output['dispatch_results'][0]['summary'] == 'executed superpowers:brainstorming'
 
@@ -156,6 +173,10 @@ def test_approved_rule_is_reapplied_to_future_runs() -> None:
             env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': f'{sys.executable} {runner}'},
         )
         assert qa_result.returncode == 0, qa_result.stderr
+        qa_payload = json.loads(qa_result.stdout)
+        qa_run = json.loads((root / qa_payload['run_output']).read_text(encoding='utf-8'))
+        assert [step['step_id'] for step in qa_run['dispatch_plan']] == ['qa-debug', 'qa-verify']
+        assert [step['input'] for step in qa_run['dispatch_results']] == [step['input'] for step in qa_run['dispatch_plan']]
 
     improve_result = run_cmd(root, 'self-improve', '--title', 'Promote repeated QA failures')
     assert improve_result.returncode == 0, improve_result.stderr
@@ -226,6 +247,7 @@ def test_self_improve_dispatches_internal_steps_only() -> None:
     ]
     assert run_output['gate_results'] == {'status': 'passed', 'blockers': []}
     assert [step['kind'] for step in run_output['dispatch_results']] == ['internal', 'internal']
+    assert [step['input'] for step in run_output['dispatch_results']] == [step['input'] for step in run_output['dispatch_plan']]
     assert [step['target'] for step in run_output['dispatch_results']] == [
         'pattern-analysis',
         'writing-skills',
@@ -280,3 +302,29 @@ def test_adapter_falls_back_to_last_stdout_json_line_when_output_file_missing() 
 
     assert first_step['summary'] == 'stdout superpowers:brainstorming'
     assert first_step['next_steps'] == ['done']
+
+
+def test_adapter_marks_invalid_stdout_json_contract_as_failed() -> None:
+    root = make_workspace('stdout-invalid')
+    runner = write_mock_runner(root, content=MOCK_INVALID_STDOUT_RUNNER, filename='invalid_stdout_runner.py')
+
+    result = run_cmd(
+        root,
+        'flow-feature',
+        '--title',
+        'CLI-only change',
+        '--goal',
+        'Exercise invalid stdout contract',
+        '--files',
+        'src/cli.py',
+        env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': f'{sys.executable} {runner}'},
+    )
+
+    assert result.returncode == 1, result.stderr
+    payload = json.loads(result.stdout)
+    run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
+    first_step = run_output['dispatch_results'][0]
+
+    assert first_step['status'] == 'failed'
+    assert first_step['stderr'] == 'invalid json contract'
+    assert first_step['input'] == run_output['dispatch_plan'][0]['input']
