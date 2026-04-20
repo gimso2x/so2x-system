@@ -246,21 +246,18 @@ def gate_requires_browser_proof(args: argparse.Namespace, gate_cfg: dict[str, An
     return has_ui_file_signal and not has_browser_proof
 
 
-def create_signal(task_id: str, args: argparse.Namespace, dispatch_results: list[dict[str, Any]] | None = None, signal_type: str | None = None, pattern: str | None = None, notes: str | None = None) -> dict[str, Any]:
+def create_signal(task_id: str, args: argparse.Namespace, gates: dict[str, Any], dispatch_results: list[dict[str, Any]] | None = None, signal_type: str | None = None, pattern: str | None = None, notes: str | None = None) -> dict[str, Any]:
     resolved_type = signal_type or SIGNAL_TYPES.get(args.mode)
     if resolved_type is None:
         return {}
 
-    verification_text = (args.verification or "").lower()
-    files_text = (args.files or "").lower()
     goal_text = f"{args.title} {args.goal} {args.scope}".lower()
     resolved_pattern = pattern or args.pattern or args.title.lower()
     resolved_notes = notes if notes is not None else args.notes
 
-    ui_file_hints = (".tsx", ".jsx", "app/", "components/", "pages/", "public/")
-    verification_hints = ("browser", "playwright", "snapshot", "qa")
-    if args.mode in {"flow-feature", "flow-init"} and any(hint in files_text for hint in ui_file_hints) and not any(hint in verification_text for hint in verification_hints):
-        resolved_pattern = "browser verification missing"
+    browser_gate = gates.get("gates", {}).get("browser_verification", {})
+    if args.mode in {"flow-feature", "flow-init"} and gate_requires_browser_proof(args, browser_gate):
+        resolved_pattern = browser_gate.get("pattern", "browser verification missing")
         resolved_notes = "UI-oriented work ran without browser proof in verification context"
     elif args.mode == "flow-review" and dispatch_results:
         failed_reviews = [step for step in dispatch_results if step.get("status") == "failed"]
@@ -451,7 +448,7 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
     if blockers:
         run_summary.update({"status": "blocked", "gate_results": gate_results, "dispatch_results": []})
         write_json(run_output, run_summary)
-        signal = create_signal(task_id, args, signal_type="gate_block", pattern=blockers[0], notes="Blocked by approved gate")
+        signal = create_signal(task_id, args, gates, signal_type="gate_block", pattern=blockers[0], notes="Blocked by approved gate")
         signal_output = write_signal_file(args, task_path, signal)
         append_history(run_summary)
         update_state(task_path, mode_bucket, signal)
@@ -466,11 +463,12 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
     })
     write_json(run_output, run_summary)
 
-    signal = create_signal(task_id, args, dispatch_results=dispatch_results)
+    signal = create_signal(task_id, args, gates, dispatch_results=dispatch_results)
     if failed_steps:
         signal = create_signal(
             task_id,
             args,
+            gates,
             dispatch_results=dispatch_results,
             signal_type="dispatch_failure",
             pattern=failed_steps[0]["target"],
