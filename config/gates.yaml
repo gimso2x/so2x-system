@@ -3,3 +3,15 @@ gates:
     enabled: false
     pattern: browser verification missing
     action: require_browser_proof_for_ui_changes
+    ui_file_hints:
+      - ".tsx"
+      - ".jsx"
+      - "app/"
+      - "components/"
+      - "pages/"
+      - "public/"
+    verification_hints:
+      - "browser"
+      - "playwright"
+      - "snapshot"
+      - "qa"

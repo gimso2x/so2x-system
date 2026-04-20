@@ -29,16 +29,39 @@ parser.add_argument('--step', required=True)
 parser.add_argument('--prompt-file', required=True)
 parser.add_argument('--task-doc', required=True)
 parser.add_argument('--rules-file', required=True)
+parser.add_argument('--output-file', required=True)
 args = parser.parse_args()
 
 payload = {
-    'step': args.step,
+    'summary': f"executed {args.step}",
+    'artifacts': [args.task_doc],
+    'next_steps': [],
+    'runner_step': args.step,
     'prompt': Path(args.prompt_file).read_text(encoding='utf-8'),
     'task_doc': Path(args.task_doc).read_text(encoding='utf-8'),
     'rules': json.loads(Path(args.rules_file).read_text(encoding='utf-8')),
     'status': 'success',
 }
-print(json.dumps(payload))
+Path(args.output_file).write_text(json.dumps(payload), encoding='utf-8')
+print('mock-runner completed')
+'''
+
+
+MOCK_STDOUT_ONLY_RUNNER = '''from __future__ import annotations
+
+import argparse
+import json
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--step', required=True)
+parser.add_argument('--prompt-file', required=True)
+parser.add_argument('--task-doc', required=True)
+parser.add_argument('--rules-file', required=True)
+parser.add_argument('--output-file', required=True)
+args = parser.parse_args()
+
+print('log before result')
+print(json.dumps({'status': 'success', 'summary': f'stdout {args.step}', 'artifacts': [], 'next_steps': ['done']}))
 '''
 
 
@@ -49,9 +72,9 @@ def make_workspace(name: str) -> Path:
     return workspace
 
 
-def write_mock_runner(workspace: Path) -> Path:
-    path = workspace / 'mock_superpower_runner.py'
-    path.write_text(MOCK_RUNNER, encoding='utf-8')
+def write_mock_runner(workspace: Path, content: str = MOCK_RUNNER, filename: str = 'mock_superpower_runner.py') -> Path:
+    path = workspace / filename
+    path.write_text(content, encoding='utf-8')
     return path
 
 
@@ -93,7 +116,7 @@ def test_flow_feature_dispatches_superpower_steps_and_records_results() -> None:
     run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
 
     assert run_output['status'] == 'success'
-    assert [step['id'] for step in run_output['dispatch_plan']] == [
+    assert [step['step_id'] for step in run_output['dispatch_plan']] == [
         'feature-brainstorm',
         'feature-plan',
         'feature-build',
@@ -103,6 +126,7 @@ def test_flow_feature_dispatches_superpower_steps_and_records_results() -> None:
         'superpowers:writing-plans',
         'superpowers:subagent-driven-development',
     ]
+    assert run_output['dispatch_plan'][0]['input']['mode'] == 'flow-feature'
     assert run_output['gate_results'] == {'status': 'passed', 'blockers': []}
     assert [step['step_id'] for step in run_output['dispatch_results']] == [
         'feature-brainstorm',
@@ -110,6 +134,7 @@ def test_flow_feature_dispatches_superpower_steps_and_records_results() -> None:
         'feature-build',
     ]
     assert all(step['status'] == 'success' for step in run_output['dispatch_results'])
+    assert run_output['dispatch_results'][0]['summary'] == 'executed superpowers:brainstorming'
 
 
 def test_approved_rule_is_reapplied_to_future_runs() -> None:
@@ -144,9 +169,11 @@ def test_approved_rule_is_reapplied_to_future_runs() -> None:
         root,
         'flow-feature',
         '--title',
-        'UI change without browser proof',
+        'Checkout polish',
         '--goal',
         'Exercise approved gate',
+        '--files',
+        'app/checkout/page.tsx,components/CheckoutButton.tsx',
         env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': f'{sys.executable} {runner}'},
     )
     assert gated_result.returncode == 2
@@ -159,11 +186,13 @@ def test_approved_rule_is_reapplied_to_future_runs() -> None:
         root,
         'flow-feature',
         '--title',
-        'UI change with browser proof',
+        'Checkout polish verified',
         '--goal',
         'Exercise approved rule injection',
+        '--files',
+        'app/checkout/page.tsx',
         '--verification',
-        'browser proof attached',
+        'playwright browser snapshot attached',
         env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': f'{sys.executable} {runner}'},
     )
     assert allowed_result.returncode == 0, allowed_result.stderr
@@ -191,7 +220,7 @@ def test_self_improve_dispatches_internal_steps_only() -> None:
     payload = json.loads(result.stdout)
     run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
 
-    assert [step['id'] for step in run_output['dispatch_plan']] == [
+    assert [step['step_id'] for step in run_output['dispatch_plan']] == [
         'improve-pattern-analysis',
         'improve-writing-skills',
     ]
@@ -211,9 +240,11 @@ def test_signal_classifies_missing_browser_verification_pattern() -> None:
         root,
         'flow-feature',
         '--title',
-        'Add UI slice',
+        'Add checkout slice',
         '--goal',
-        'Change the checkout UI',
+        'Change the checkout screen',
+        '--files',
+        'app/checkout/page.tsx,components/CheckoutButton.tsx',
         env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': f'{sys.executable} {runner}'},
     )
 
@@ -224,3 +255,28 @@ def test_signal_classifies_missing_browser_verification_pattern() -> None:
     assert signal_output['type'] == 'feature_run'
     assert signal_output['pattern'] == 'browser verification missing'
     assert signal_output['notes'] == 'UI-oriented work ran without browser proof in verification context'
+
+
+def test_adapter_falls_back_to_last_stdout_json_line_when_output_file_missing() -> None:
+    root = make_workspace('stdout-fallback')
+    runner = write_mock_runner(root, content=MOCK_STDOUT_ONLY_RUNNER, filename='stdout_runner.py')
+
+    result = run_cmd(
+        root,
+        'flow-feature',
+        '--title',
+        'CLI-only change',
+        '--goal',
+        'Exercise stdout fallback',
+        '--files',
+        'src/cli.py',
+        env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': f'{sys.executable} {runner}'},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
+    first_step = run_output['dispatch_results'][0]
+
+    assert first_step['summary'] == 'stdout superpowers:brainstorming'
+    assert first_step['next_steps'] == ['done']

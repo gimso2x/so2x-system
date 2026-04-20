@@ -157,6 +157,24 @@ def route_targets(steps: list[dict[str, Any]]) -> list[str]:
     return [step.get("target", step.get("id", "unknown")) for step in steps]
 
 
+def build_dispatch_plan(args: argparse.Namespace, routing: dict[str, Any], task_doc: Path) -> list[dict[str, Any]]:
+    plan: list[dict[str, Any]] = []
+    for step in route_steps_for_mode(routing, args.mode):
+        plan.append(
+            {
+                "step_id": step["id"],
+                "kind": step["kind"],
+                "target": step["target"],
+                "input": {
+                    "task_doc": str(task_doc.relative_to(ROOT)),
+                    "mode": args.mode,
+                    "verification": args.verification or "not-provided",
+                },
+            }
+        )
+    return plan
+
+
 def render_task_doc(template_key: str, metadata: dict[str, str], templates: dict[str, Any], routing: dict[str, Any]) -> str:
     template = templates[template_key]
     flow = route_targets(route_steps_for_mode(routing, metadata["mode"]))
@@ -188,8 +206,13 @@ def write_task_doc(args: argparse.Namespace, templates: dict[str, Any], routing:
     return task_id, task_path
 
 
-def build_run_summary(task_id: str, args: argparse.Namespace, task_path: Path, routing: dict[str, Any], approved_rules: list[dict[str, Any]]) -> dict[str, Any]:
-    dispatch_plan = route_steps_for_mode(routing, args.mode)
+def build_run_summary(
+    task_id: str,
+    args: argparse.Namespace,
+    task_path: Path,
+    dispatch_plan: list[dict[str, Any]],
+    approved_rules: list[dict[str, Any]],
+) -> dict[str, Any]:
     return {
         "task_id": task_id,
         "mode": args.mode,
@@ -213,17 +236,30 @@ def signal_dir_for_mode(mode: str) -> Path:
     return SIGNAL_DIR / "fixes"
 
 
+def gate_requires_browser_proof(args: argparse.Namespace, gate_cfg: dict[str, Any]) -> bool:
+    files_text = (args.files or "").lower()
+    verification_text = (args.verification or "").lower()
+    ui_file_hints = [hint.lower() for hint in gate_cfg.get("ui_file_hints", [])]
+    verification_hints = [hint.lower() for hint in gate_cfg.get("verification_hints", [])]
+    has_ui_file_signal = any(hint in files_text for hint in ui_file_hints)
+    has_browser_proof = any(hint in verification_text for hint in verification_hints)
+    return has_ui_file_signal and not has_browser_proof
+
+
 def create_signal(task_id: str, args: argparse.Namespace, dispatch_results: list[dict[str, Any]] | None = None, signal_type: str | None = None, pattern: str | None = None, notes: str | None = None) -> dict[str, Any]:
     resolved_type = signal_type or SIGNAL_TYPES.get(args.mode)
     if resolved_type is None:
         return {}
 
     verification_text = (args.verification or "").lower()
-    goal_text = f"{args.title} {args.goal} {args.scope} {args.files}".lower()
+    files_text = (args.files or "").lower()
+    goal_text = f"{args.title} {args.goal} {args.scope}".lower()
     resolved_pattern = pattern or args.pattern or args.title.lower()
     resolved_notes = notes if notes is not None else args.notes
 
-    if args.mode in {"flow-feature", "flow-init"} and "ui" in goal_text and "browser" not in verification_text:
+    ui_file_hints = (".tsx", ".jsx", "app/", "components/", "pages/", "public/")
+    verification_hints = ("browser", "playwright", "snapshot", "qa")
+    if args.mode in {"flow-feature", "flow-init"} and any(hint in files_text for hint in ui_file_hints) and not any(hint in verification_text for hint in verification_hints):
         resolved_pattern = "browser verification missing"
         resolved_notes = "UI-oriented work ran without browser proof in verification context"
     elif args.mode == "flow-review" and dispatch_results:
@@ -339,25 +375,26 @@ def sync_approved_rules() -> list[dict[str, Any]]:
 
 def gate_blockers(args: argparse.Namespace, gates: dict[str, Any], approved_rules: list[dict[str, Any]]) -> list[str]:
     blockers: list[str] = []
-    verification_text = (args.verification or "").lower()
     for gate_name, gate_cfg in gates.get("gates", {}).items():
         enabled = bool(gate_cfg.get("enabled")) or any(rule["pattern"] == gate_cfg.get("pattern") for rule in approved_rules)
         if not enabled:
             continue
         action = gate_cfg.get("action")
-        if action == "require_browser_proof_for_ui_changes":
-            ui_text = f"{args.title} {args.goal} {args.scope} {args.files}".lower()
-            if "ui" in ui_text and "browser" not in verification_text:
-                blockers.append(gate_name)
+        if action == "require_browser_proof_for_ui_changes" and gate_requires_browser_proof(args, gate_cfg):
+            blockers.append(gate_name)
     return blockers
 
 
 def run_internal_step(step: dict[str, Any], args: argparse.Namespace, task_doc: Path, approved_rules: list[dict[str, Any]]) -> dict[str, Any]:
     return {
-        "step_id": step["id"],
+        "step_id": step["step_id"],
         "kind": "internal",
         "target": step["target"],
+        "input": step["input"],
         "status": "success",
+        "summary": "local internal step recorded",
+        "artifacts": [],
+        "next_steps": [],
         "prompt": (
             f"internal_step: {step['target']}\n"
             f"mode: {args.mode}\n"
@@ -367,15 +404,15 @@ def run_internal_step(step: dict[str, Any], args: argparse.Namespace, task_doc: 
     }
 
 
-def dispatch_flow(args: argparse.Namespace, routing: dict[str, Any], task_doc: Path, approved_rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def dispatch_flow(args: argparse.Namespace, dispatch_plan: list[dict[str, Any]], task_doc: Path, approved_rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for step in route_steps_for_mode(routing, args.mode):
+    for step in dispatch_plan:
         if step.get("kind") == "internal":
             results.append(run_internal_step(step, args, task_doc, approved_rules))
             continue
         results.append(
             run_superpowers_skill(
-                step,
+                {"id": step["step_id"], "target": step["target"]},
                 mode=args.mode,
                 title=args.title,
                 goal=args.goal,
@@ -401,8 +438,9 @@ def write_signal_file(args: argparse.Namespace, task_path: Path, signal: dict[st
 def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: dict[str, Any], gates: dict[str, Any]) -> RunArtifacts:
     approved_rules = sync_approved_rules()
     task_id, task_path = write_task_doc(args, templates, routing)
+    dispatch_plan = build_dispatch_plan(args, routing, task_path)
     mode_bucket = MODE_TO_BUCKET[args.mode]
-    run_summary = build_run_summary(task_id, args, task_path, routing, approved_rules)
+    run_summary = build_run_summary(task_id, args, task_path, dispatch_plan, approved_rules)
     run_output = OUTPUT_RUN_DIR / f"{task_path.stem}.json"
 
     blockers = gate_blockers(args, gates, approved_rules)
@@ -419,7 +457,7 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
         update_state(task_path, mode_bucket, signal)
         return RunArtifacts(task_doc=task_path, run_output=run_output, signal_output=signal_output, candidate_outputs=[], exit_code=2)
 
-    dispatch_results = dispatch_flow(args, routing, task_path, approved_rules)
+    dispatch_results = dispatch_flow(args, dispatch_plan, task_path, approved_rules)
     failed_steps = [step for step in dispatch_results if step.get("status") == "failed"]
     run_summary.update({
         "status": "failed" if failed_steps else "success",
@@ -448,7 +486,8 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
 def run_self_improve(args: argparse.Namespace, templates: dict[str, Any], routing: dict[str, Any]) -> RunArtifacts:
     task_id, task_path = write_task_doc(args, templates, routing)
     approved_rules = sync_approved_rules()
-    dispatch_results = dispatch_flow(args, routing, task_path, approved_rules)
+    dispatch_plan = build_dispatch_plan(args, routing, task_path)
+    dispatch_results = dispatch_flow(args, dispatch_plan, task_path, approved_rules)
     counts = collect_pattern_counts()
     candidates = [write_candidate(pattern, count) for pattern, count in sorted(counts.items()) if count >= 2]
     run_output = OUTPUT_RUN_DIR / f"{task_path.stem}.json"
@@ -456,7 +495,7 @@ def run_self_improve(args: argparse.Namespace, templates: dict[str, Any], routin
         "task_id": task_id,
         "mode": args.mode,
         "title": args.title,
-        "dispatch_plan": route_steps_for_mode(routing, args.mode),
+        "dispatch_plan": dispatch_plan,
         "gate_results": {"status": "passed", "blockers": []},
         "dispatch_results": dispatch_results,
         "generated_candidates": [str(path.relative_to(ROOT)) for path in candidates],
