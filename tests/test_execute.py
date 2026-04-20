@@ -93,10 +93,16 @@ def test_flow_feature_dispatches_superpower_steps_and_records_results() -> None:
     run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
 
     assert run_output['status'] == 'success'
-    assert [step['step'] for step in run_output['dispatch_results']] == [
-        'brainstorming',
-        'writing-plans',
-        'subagent-driven-development',
+    assert [step['step_id'] for step in run_output['dispatch_results']] == [
+        'feature-brainstorm',
+        'feature-plan',
+        'feature-build',
+    ]
+    assert [step['kind'] for step in run_output['dispatch_results']] == ['skill', 'skill', 'skill']
+    assert [step['target'] for step in run_output['dispatch_results']] == [
+        'superpowers:brainstorming',
+        'superpowers:writing-plans',
+        'superpowers:subagent-driven-development',
     ]
     assert all(step['status'] == 'success' for step in run_output['dispatch_results'])
 
@@ -162,3 +168,49 @@ def test_approved_rule_is_reapplied_to_future_runs() -> None:
     assert allowed_run['approved_rules']
     assert allowed_run['approved_rules'][0]['pattern'] == 'browser verification missing'
     assert 'browser verification missing' in allowed_run['dispatch_results'][0]['prompt']
+
+
+def test_self_improve_dispatches_internal_steps_only() -> None:
+    root = make_workspace('self-improve')
+    runner = write_mock_runner(root)
+
+    result = run_cmd(
+        root,
+        'self-improve',
+        '--title',
+        'Promote repeated QA failures',
+        env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': f'{sys.executable} {runner}'},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    run_output = json.loads((root / payload['run_output']).read_text(encoding='utf-8'))
+
+    assert [step['kind'] for step in run_output['dispatch_results']] == ['internal', 'internal']
+    assert [step['target'] for step in run_output['dispatch_results']] == [
+        'pattern-analysis',
+        'writing-skills',
+    ]
+
+
+def test_signal_classifies_missing_browser_verification_pattern() -> None:
+    root = make_workspace('signal-classifier')
+    runner = write_mock_runner(root)
+
+    result = run_cmd(
+        root,
+        'flow-feature',
+        '--title',
+        'Add UI slice',
+        '--goal',
+        'Change the checkout UI',
+        env={'SO2X_SYSTEM_SUPERPOWER_COMMAND': f'{sys.executable} {runner}'},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    signal_output = json.loads((root / payload['signal_output']).read_text(encoding='utf-8'))
+
+    assert signal_output['type'] == 'feature_run'
+    assert signal_output['pattern'] == 'browser verification missing'
+    assert signal_output['notes'] == 'UI-oriented work ran without browser proof in verification context'

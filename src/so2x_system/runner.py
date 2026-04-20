@@ -2,9 +2,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import shlex
-import subprocess
-import tempfile
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -12,6 +9,8 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+
+from so2x_system.adapters.superpowers import run_superpowers_skill
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_DIR = ROOT / "config"
@@ -72,7 +71,7 @@ def load_yaml(path: Path) -> dict[str, Any]:
     return yaml.safe_load(path.read_text())
 
 
-def load_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
+def load_json(path: Path, fallback: Any) -> Any:
     if not path.exists():
         return fallback
     return json.loads(path.read_text())
@@ -80,6 +79,11 @@ def load_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
 
 def write_json(path: Path, payload: Any) -> None:
     path.write_text(json.dumps(payload, indent=2) + "\n")
+
+
+def write_json_if_missing(path: Path, payload: Any) -> None:
+    if not path.exists():
+        write_json(path, payload)
 
 
 def ensure_layout() -> None:
@@ -109,11 +113,6 @@ def ensure_layout() -> None:
     history_path = STATE_DIR / "history.jsonl"
     if not history_path.exists():
         history_path.write_text("")
-
-
-def write_json_if_missing(path: Path, payload: Any) -> None:
-    if not path.exists():
-        write_json(path, payload)
 
 
 def parse_args() -> argparse.Namespace:
@@ -150,9 +149,17 @@ def task_doc_metadata(args: argparse.Namespace, task_id: str) -> dict[str, str]:
     }
 
 
+def route_steps_for_mode(routing: dict[str, Any], mode: str) -> list[dict[str, Any]]:
+    return routing.get(TASK_TEMPLATE_KEYS[mode], {}).get("flow", [])
+
+
+def route_targets(steps: list[dict[str, Any]]) -> list[str]:
+    return [step.get("target", step.get("id", "unknown")) for step in steps]
+
+
 def render_task_doc(template_key: str, metadata: dict[str, str], templates: dict[str, Any], routing: dict[str, Any]) -> str:
     template = templates[template_key]
-    flow = routing.get(template["flow_key"], {}).get("flow", [])
+    flow = route_targets(route_steps_for_mode(routing, metadata["mode"]))
     lines = [
         f"# {metadata['title']}",
         "",
@@ -182,7 +189,7 @@ def write_task_doc(args: argparse.Namespace, templates: dict[str, Any], routing:
 
 
 def build_run_summary(task_id: str, args: argparse.Namespace, task_path: Path, routing: dict[str, Any], approved_rules: list[dict[str, Any]]) -> dict[str, Any]:
-    route = routing.get(TASK_TEMPLATE_KEYS[args.mode], {}).get("flow", [])
+    route = route_steps_for_mode(routing, args.mode)
     return {
         "task_id": task_id,
         "mode": args.mode,
@@ -206,19 +213,36 @@ def signal_dir_for_mode(mode: str) -> Path:
     return SIGNAL_DIR / "fixes"
 
 
-def create_signal(task_id: str, args: argparse.Namespace, signal_type: str | None = None, pattern: str | None = None, notes: str | None = None) -> dict[str, Any]:
+def create_signal(task_id: str, args: argparse.Namespace, dispatch_results: list[dict[str, Any]] | None = None, signal_type: str | None = None, pattern: str | None = None, notes: str | None = None) -> dict[str, Any]:
     resolved_type = signal_type or SIGNAL_TYPES.get(args.mode)
     if resolved_type is None:
         return {}
+
+    verification_text = (args.verification or "").lower()
+    goal_text = f"{args.title} {args.goal} {args.scope} {args.files}".lower()
+    resolved_pattern = pattern or args.pattern or args.title.lower()
+    resolved_notes = notes if notes is not None else args.notes
+
+    if args.mode in {"flow-feature", "flow-init"} and "ui" in goal_text and "browser" not in verification_text:
+        resolved_pattern = "browser verification missing"
+        resolved_notes = "UI-oriented work ran without browser proof in verification context"
+    elif args.mode == "flow-review" and dispatch_results:
+        failed_reviews = [step for step in dispatch_results if step.get("status") == "failed"]
+        if failed_reviews:
+            resolved_pattern = "repeated_review_issue"
+            resolved_notes = failed_reviews[0].get("stderr", "Review flow reported a repeated issue")
+    elif args.mode == "flow-qa" and "env" in goal_text and "dispatch_failure" == resolved_type:
+        resolved_pattern = "environment_instability"
+
     return {
         "task_id": task_id,
         "type": resolved_type,
-        "pattern": pattern or args.pattern or args.title.lower(),
+        "pattern": resolved_pattern,
         "source": args.mode,
         "count": 1,
         "first_seen": iso_now(),
         "last_seen": iso_now(),
-        "notes": notes if notes is not None else args.notes,
+        "notes": resolved_notes,
     }
 
 
@@ -321,53 +345,48 @@ def gate_blockers(args: argparse.Namespace, gates: dict[str, Any], approved_rule
         if not enabled:
             continue
         action = gate_cfg.get("action")
-        if action == "require_browser_proof_for_ui_changes" and "browser" not in verification_text:
-            blockers.append(gate_name)
+        if action == "require_browser_proof_for_ui_changes":
+            ui_text = f"{args.title} {args.goal} {args.scope} {args.files}".lower()
+            if "ui" in ui_text and "browser" not in verification_text:
+                blockers.append(gate_name)
     return blockers
 
 
-def render_superpower_prompt(step: str, args: argparse.Namespace, task_doc: Path, approved_rules: list[dict[str, Any]]) -> str:
-    rules_text = "\n".join(f"- {rule['pattern']} ({rule['recommendation']})" for rule in approved_rules) or "- none"
-    return (
-        f"step: {step}\n"
-        f"mode: {args.mode}\n"
-        f"title: {args.title}\n"
-        f"goal: {args.goal or 'n/a'}\n"
-        f"task_doc: {task_doc}\n"
-        f"verification: {args.verification or 'n/a'}\n"
-        f"approved_rules:\n{rules_text}\n"
-    )
+def run_internal_step(step: dict[str, Any], args: argparse.Namespace, task_doc: Path, approved_rules: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "step_id": step["id"],
+        "kind": "internal",
+        "target": step["target"],
+        "status": "success",
+        "prompt": (
+            f"internal_step: {step['target']}\n"
+            f"mode: {args.mode}\n"
+            f"task_doc: {task_doc}\n"
+            f"approved_rules: {len(approved_rules)}\n"
+        ),
+    }
 
 
-def dispatch_route(route: list[str], args: argparse.Namespace, task_doc: Path, approved_rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    command = shlex.split(__import__("os").environ.get("SO2X_SYSTEM_SUPERPOWER_COMMAND", "").strip())
+def dispatch_flow(args: argparse.Namespace, routing: dict[str, Any], task_doc: Path, approved_rules: list[dict[str, Any]]) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
-    for step in route:
-        prompt_text = render_superpower_prompt(step, args, task_doc, approved_rules)
-        if not command:
-            results.append({"step": step, "status": "simulated", "prompt": prompt_text})
+    for step in route_steps_for_mode(routing, args.mode):
+        if step.get("kind") == "internal":
+            results.append(run_internal_step(step, args, task_doc, approved_rules))
             continue
-        with tempfile.TemporaryDirectory() as tmpdir:
-            tmpdir_path = Path(tmpdir)
-            prompt_file = tmpdir_path / "prompt.txt"
-            rules_file = tmpdir_path / "rules.json"
-            prompt_file.write_text(prompt_text, encoding="utf-8")
-            write_json(rules_file, approved_rules)
-            proc = subprocess.run(
-                [*command, "--step", step, "--prompt-file", str(prompt_file), "--task-doc", str(task_doc), "--rules-file", str(rules_file)],
+        results.append(
+            run_superpowers_skill(
+                step,
+                mode=args.mode,
+                title=args.title,
+                goal=args.goal,
+                verification=args.verification,
+                task_doc=task_doc,
+                approved_rules=approved_rules,
                 cwd=ROOT,
-                text=True,
-                capture_output=True,
-                check=False,
             )
-        if proc.returncode != 0:
-            results.append({"step": step, "status": "failed", "returncode": proc.returncode, "stdout": proc.stdout, "stderr": proc.stderr, "prompt": prompt_text})
+        )
+        if results[-1].get("status") == "failed":
             break
-        payload = json.loads(proc.stdout) if proc.stdout.strip() else {"status": "success"}
-        payload.setdefault("step", step)
-        payload.setdefault("status", "success")
-        payload.setdefault("prompt", prompt_text)
-        results.append(payload)
     return results
 
 
@@ -383,7 +402,6 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
     approved_rules = sync_approved_rules()
     task_id, task_path = write_task_doc(args, templates, routing)
     mode_bucket = MODE_TO_BUCKET[args.mode]
-    route = routing.get(TASK_TEMPLATE_KEYS[args.mode], {}).get("flow", [])
     run_summary = build_run_summary(task_id, args, task_path, routing, approved_rules)
     run_output = OUTPUT_RUN_DIR / f"{task_path.stem}.json"
 
@@ -397,7 +415,7 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
         update_state(task_path, mode_bucket, signal)
         return RunArtifacts(task_doc=task_path, run_output=run_output, signal_output=signal_output, candidate_outputs=[], exit_code=2)
 
-    dispatch_results = dispatch_route(route, args, task_path, approved_rules)
+    dispatch_results = dispatch_flow(args, routing, task_path, approved_rules)
     failed_steps = [step for step in dispatch_results if step.get("status") == "failed"]
     run_summary.update({
         "status": "failed" if failed_steps else "success",
@@ -405,9 +423,16 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
     })
     write_json(run_output, run_summary)
 
-    signal = create_signal(task_id, args)
+    signal = create_signal(task_id, args, dispatch_results=dispatch_results)
     if failed_steps:
-        signal = create_signal(task_id, args, signal_type="dispatch_failure", pattern=failed_steps[0]["step"], notes=failed_steps[0].get("stderr", "dispatch failed"))
+        signal = create_signal(
+            task_id,
+            args,
+            dispatch_results=dispatch_results,
+            signal_type="dispatch_failure",
+            pattern=failed_steps[0]["target"],
+            notes=failed_steps[0].get("stderr", "dispatch failed"),
+        )
     signal_output = write_signal_file(args, task_path, signal)
 
     append_history(run_summary)
@@ -417,14 +442,16 @@ def run_standard(args: argparse.Namespace, templates: dict[str, Any], routing: d
 
 def run_self_improve(args: argparse.Namespace, templates: dict[str, Any], routing: dict[str, Any]) -> RunArtifacts:
     task_id, task_path = write_task_doc(args, templates, routing)
+    approved_rules = sync_approved_rules()
+    dispatch_results = dispatch_flow(args, routing, task_path, approved_rules)
     counts = collect_pattern_counts()
     candidates = [write_candidate(pattern, count) for pattern, count in sorted(counts.items()) if count >= 2]
-    approved_rules = sync_approved_rules()
     run_output = OUTPUT_RUN_DIR / f"{task_path.stem}.json"
     payload = {
         "task_id": task_id,
         "mode": args.mode,
         "title": args.title,
+        "dispatch_results": dispatch_results,
         "generated_candidates": [str(path.relative_to(ROOT)) for path in candidates],
         "approved_rules": approved_rules,
         "created_at": iso_now(),

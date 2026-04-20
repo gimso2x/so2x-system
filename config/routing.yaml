@@ -1,15 +1,29 @@
 feature:
   flow:
-    - brainstorming
-    - writing-plans
-    - subagent-driven-development
+    - id: feature-brainstorm
+      kind: skill
+      target: superpowers:brainstorming
+    - id: feature-plan
+      kind: skill
+      target: superpowers:writing-plans
+    - id: feature-build
+      kind: skill
+      target: superpowers:subagent-driven-development
 qa:
   flow:
-    - systematic-debugging
+    - id: qa-debug
+      kind: skill
+      target: superpowers:systematic-debugging
 review:
   flow:
-    - requesting-code-review
+    - id: review-code
+      kind: skill
+      target: superpowers:requesting-code-review
 self_improve:
   flow:
-    - pattern-analysis
-    - writing-skills
+    - id: improve-pattern-analysis
+      kind: internal
+      target: pattern-analysis
+    - id: improve-writing-skills
+      kind: internal
+      target: writing-skills
