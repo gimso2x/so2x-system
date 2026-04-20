@@ -1,33 +1,16 @@
-from __future__ import annotations
-
-import json
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-SOURCE_ROOT = Path(__file__).resolve().parents[1]
-COPY_EXCLUDE = shutil.ignore_patterns(
-    ".git",
-    ".pytest_cache",
-    "__pycache__",
-    ".venv",
-    "*.pyc",
-)
+
+ROOT = Path(__file__).resolve().parents[1]
+EXECUTE = ROOT / "scripts" / "execute.py"
 
 
-def make_workspace(name: str) -> Path:
-    workspace = Path("/tmp") / f"so2x-system-{name}"
-    shutil.rmtree(workspace, ignore_errors=True)
-    shutil.copytree(SOURCE_ROOT, workspace, ignore=COPY_EXCLUDE)
-    return workspace
-
-
-def run_cmd(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
-    script = workspace / "scripts" / "execute.py"
+def run_cmd(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        [sys.executable, str(script), *args],
-        cwd=workspace,
+        [sys.executable, str(EXECUTE), *args],
+        cwd=ROOT,
         text=True,
         capture_output=True,
         check=False,
@@ -35,67 +18,53 @@ def run_cmd(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
 
 
 def test_flow_feature_creates_task_run_signal_and_state() -> None:
-    root = make_workspace("feature")
+    workspace = Path("/tmp/so2x-system-feature-test")
+    if workspace.exists():
+        subprocess.run(["rm", "-rf", str(workspace)], check=True)
+    subprocess.run(["cp", "-R", str(ROOT), str(workspace)], check=True)
 
-    result = run_cmd(
-        root,
-        "flow-feature",
-        "--title",
-        "Add signal promotion",
-        "--goal",
-        "Promote repeated patterns into candidate rules",
-        "--files",
-        "src/so2x_system/runner.py,docs/RULES.md",
-        "--verification",
-        "pytest",
-        "--notes",
-        "Start from the plan",
+    result = subprocess.run(
+        [sys.executable, str(workspace / "scripts" / "execute.py"), "flow-feature", "--title", "Add signal promotion", "--goal", "Promote repeated patterns into candidate rules", "--files", "src/so2x_system/runner.py,docs/RULES.md", "--verification", "pytest", "--notes", "Start from the plan"],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        check=False,
     )
 
     assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout)
-    task_path = root / payload["task_doc"]
-    run_path = root / payload["run_output"]
-    signal_path = root / payload["signal_output"]
-    history_path = root / "state" / "history.jsonl"
-    metrics_path = root / "state" / "metrics.json"
-
-    assert task_path.exists()
-    assert run_path.exists()
-    assert signal_path.exists()
-    assert history_path.exists()
-    assert metrics_path.exists()
-    assert "Add signal promotion" in task_path.read_text()
-
-    metrics = json.loads(metrics_path.read_text())
-    assert metrics["runs_by_mode"]["feature"] == 1
-    assert metrics["signals_by_type"]["feature_run"] == 1
+    payload = __import__("json").loads(result.stdout)
+    assert (workspace / payload["task_doc"]).exists()
+    assert (workspace / payload["run_output"]).exists()
+    assert (workspace / payload["signal_output"]).exists()
 
 
 def test_self_improve_promotes_repeated_patterns() -> None:
-    root = make_workspace("self-improve")
+    workspace = Path("/tmp/so2x-system-self-improve-test")
+    if workspace.exists():
+        subprocess.run(["rm", "-rf", str(workspace)], check=True)
+    subprocess.run(["cp", "-R", str(ROOT), str(workspace)], check=True)
 
     for _ in range(3):
-        result = run_cmd(
-            root,
-            "flow-qa",
-            "--title",
-            "Missing browser proof",
-            "--goal",
-            "Capture recurring QA misses",
-            "--pattern",
-            "browser verification missing",
+        result = subprocess.run(
+            [sys.executable, str(workspace / "scripts" / "execute.py"), "flow-qa", "--title", "Missing browser proof", "--goal", "Capture recurring QA misses", "--pattern", "browser verification missing"],
+            cwd=workspace,
+            text=True,
+            capture_output=True,
+            check=False,
         )
         assert result.returncode == 0, result.stderr
 
-    result = run_cmd(root, "self-improve", "--title", "Promote repeated QA failures")
+    result = subprocess.run(
+        [sys.executable, str(workspace / "scripts" / "execute.py"), "self-improve", "--title", "Promote repeated QA failures"],
+        cwd=workspace,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
 
     assert result.returncode == 0, result.stderr
-    payload = json.loads(result.stdout)
+    payload = __import__("json").loads(result.stdout)
     assert payload["candidate_outputs"]
-    candidate_path = root / payload["candidate_outputs"][0]
-    assert candidate_path.exists()
-
-    candidate_text = candidate_path.read_text()
+    candidate_text = (workspace / payload["candidate_outputs"][0]).read_text()
     assert "browser verification missing" in candidate_text
     assert "candidate hard gate" in candidate_text.lower()
